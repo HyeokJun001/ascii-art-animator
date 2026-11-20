@@ -1,0 +1,16 @@
+{
+  "fontSize": 10,
+  "importResolution": 240,
+  "preprocessing": {
+    "blur": 0,
+    "grain": 0,
+    "gamma": 1,
+    "blackPoint": 0,
+    "whitePoint": 255,
+    "threshold": 237,
+    "showEffect": true,
+    "invert": false,
+    "dithering": false,
+    "ditheringStrength": 65
+  }
+}

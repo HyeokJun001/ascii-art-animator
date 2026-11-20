@@ -537,7 +537,8 @@ export async function loadVideoForAscii(
   targetWidth: number,
   targetHeight: number,
   maxFrames: number = VIDEO_FPS * MAX_VIDEO_SECONDS,
-  onProgress?: (progress: number) => void
+  onProgress?: (progress: number) => void,
+  crop?: VideoCrop | null
 ): Promise<{ frames: ImageData[]; delay: number }> {
   return new Promise((resolve, reject) => {
     const video = document.createElement('video');
@@ -576,8 +577,7 @@ export async function loadVideoForAscii(
       const captureFrame = (time: number): Promise<void> =>
         new Promise((res) => {
           video.onseeked = () => {
-            const vw = video.videoWidth;
-            const vh = video.videoHeight;
+            const { sx, sy, sw: vw, sh: vh } = crop ?? { sx: 0, sy: 0, sw: video.videoWidth, sh: video.videoHeight };
             const vAspect = vw / vh;
             const tAspect = targetWidth / targetHeight;
             let dw = targetWidth, dh = targetHeight, ox = 0, oy = 0;
@@ -590,7 +590,7 @@ export async function loadVideoForAscii(
             }
             ctx.fillStyle = '#FFFFFF';
             ctx.fillRect(0, 0, targetWidth, targetHeight);
-            ctx.drawImage(video, ox, oy, dw, dh);
+            ctx.drawImage(video, sx, sy, vw, vh, ox, oy, dw, dh);
             frames.push(ctx.getImageData(0, 0, targetWidth, targetHeight));
             res();
           };
@@ -628,6 +628,58 @@ export async function loadVideoForAscii(
 
     video.src = objectUrl;
   });
+}
+
+export interface VideoCrop { sx: number; sy: number; sw: number; sh: number }
+
+const LETTERBOX_LUMA = 24;     // brighter than this counts as content
+const LETTERBOX_MIN_GAIN = 0.05; // ignore crops that save less than 5% of the frame
+
+/**
+ * Find black letterbox/pillarbox bars by sampling a few frames.
+ * Returns the content rectangle in video pixels, or null when there is nothing worth cropping.
+ */
+export async function detectVideoContentRect(file: File): Promise<VideoCrop | null> {
+  const video = document.createElement('video');
+  const url = URL.createObjectURL(file);
+  video.muted = true;
+  video.preload = 'auto';
+  try {
+    video.src = url;
+    await new Promise<void>((res, rej) => { video.onloadedmetadata = () => res(); video.onerror = () => rej(); });
+    const { videoWidth: vw, videoHeight: vh, duration } = video;
+    if (!vw || !vh || !isFinite(duration)) return null;
+
+    const w = 160, h = Math.max(1, Math.round((160 * vh) / vw));
+    const canvas = document.createElement('canvas');
+    canvas.width = w; canvas.height = h;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    if (!ctx) return null;
+
+    const colMax = new Float32Array(w), rowMax = new Float32Array(h);
+    for (const t of [0.15, 0.5, 0.85]) {
+      await new Promise<void>((res) => { video.onseeked = () => res(); video.currentTime = duration * t; });
+      ctx.drawImage(video, 0, 0, w, h);
+      const d = ctx.getImageData(0, 0, w, h).data;
+      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+        const i = (y * w + x) * 4, l = (d[i] + d[i + 1] + d[i + 2]) / 3;
+        if (l > colMax[x]) colMax[x] = l;
+        if (l > rowMax[y]) rowMax[y] = l;
+      }
+    }
+    const first = (a: Float32Array) => a.findIndex((v) => v > LETTERBOX_LUMA);
+    const last = (a: Float32Array) => a.length - 1 - [...a].reverse().findIndex((v) => v > LETTERBOX_LUMA);
+    const x0 = first(colMax), x1 = last(colMax), y0 = first(rowMax), y1 = last(rowMax);
+    if (x0 < 0 || y0 < 0) return null; // all black
+
+    const sx = Math.floor((x0 / w) * vw), sw = Math.ceil(((x1 + 1) / w) * vw) - sx;
+    const sy = Math.floor((y0 / h) * vh), sh = Math.ceil(((y1 + 1) / h) * vh) - sy;
+    return sw * sh < vw * vh * (1 - LETTERBOX_MIN_GAIN) ? { sx, sy, sw, sh } : null;
+  } catch {
+    return null;
+  } finally {
+    URL.revokeObjectURL(url);
+  }
 }
 
 /**

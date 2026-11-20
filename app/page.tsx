@@ -7,6 +7,7 @@ import {
   loadImageForAscii,
   loadGifForAscii,
   loadVideoForAscii,
+  detectVideoContentRect,
   generateFrame,
   preprocessImage,
   drawAsciiFrame,
@@ -131,13 +132,22 @@ export default function BugsAnimatorPage() {
       });
       URL.revokeObjectURL(objectUrl);
 
-      // Compute canvas dimensions from natural aspect ratio (videos up to 1080x1920 for Reels)
+      // Drop black letterbox/pillarbox bars so the grid is spent on actual content
+      const videoCrop = isVideo ? await detectVideoContentRect(file) : null;
+      if (videoCrop) {
+        naturalWidth = videoCrop.sw;
+        naturalHeight = videoCrop.sh;
+      }
+
+      // Compute canvas dimensions from natural aspect ratio.
+      // Videos always get a 1920px long side (1080x1920 for Reels): glyphs are redrawn, so upscaling costs no sharpness.
       const MAX_DIM = isVideo ? 1920 : 1200;
       sourceVideoRef.current = null; // set only once a video's frames load successfully
       let newWidth = config.width;
       let newHeight = config.height;
       if (naturalWidth > 0 && naturalHeight > 0) {
         const aspect = naturalWidth / naturalHeight;
+        if (isVideo) naturalWidth = naturalHeight = MAX_DIM;
         if (aspect >= 1) {
           newWidth = Math.min(naturalWidth, MAX_DIM);
           newHeight = Math.round(newWidth / aspect);
@@ -180,7 +190,7 @@ export default function BugsAnimatorPage() {
         setVideoLoadingProgress(0);
         try {
           const { frames, delay } = await Promise.race([
-            loadVideoForAscii(file, cols, rows, undefined, (p) => setVideoLoadingProgress(p)),
+            loadVideoForAscii(file, cols, rows, undefined, (p) => setVideoLoadingProgress(p), videoCrop),
             new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Video parsing timeout (5min)')), 300000)),
           ]) as Awaited<ReturnType<typeof loadVideoForAscii>>;
           sourceVideoRef.current = file;
