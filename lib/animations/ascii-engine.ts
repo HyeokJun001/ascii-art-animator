@@ -526,6 +526,9 @@ export async function loadImageForAscii(
   });
 }
 
+export const VIDEO_FPS = 24;
+export const MAX_VIDEO_SECONDS = 90; // Instagram Reels length; ~50KB per frame at default resolution
+
 /**
  * Load video frames for ASCII conversion
  */
@@ -533,7 +536,7 @@ export async function loadVideoForAscii(
   file: File,
   targetWidth: number,
   targetHeight: number,
-  maxFrames: number = 50,
+  maxFrames: number = VIDEO_FPS * MAX_VIDEO_SECONDS,
   onProgress?: (progress: number) => void
 ): Promise<{ frames: ImageData[]; delay: number }> {
   return new Promise((resolve, reject) => {
@@ -552,8 +555,10 @@ export async function loadVideoForAscii(
         return;
       }
 
-      const totalFrames = Math.min(Math.floor(duration * 24), maxFrames);
-      const frameInterval = duration / totalFrames;
+      // Sample at a fixed real-time rate so playback/export stays in sync with the source audio.
+      // Videos longer than maxFrames / VIDEO_FPS seconds are trimmed, not slowed down.
+      const totalFrames = Math.max(1, Math.min(Math.floor(duration * VIDEO_FPS), maxFrames));
+      const frameInterval = 1 / VIDEO_FPS;
 
       const canvas = document.createElement('canvas');
       canvas.width = targetWidth;

@@ -81,7 +81,8 @@ export default function AsciiCanvas({ config, playing }: AsciiCanvasProps) {
       }
 
       if (intervalElapsed) {
-        lastFrameTimeRef.current = timestamp;
+        // Keep the remainder so e.g. 24fps on a 60Hz display averages 24fps instead of snapping to 20
+        lastFrameTimeRef.current = timestamp - ((timestamp - lastFrameTimeRef.current) % frameInterval);
         animTickRef.current += 1;
 
         if (currentConfig.imageFrames && currentConfig.imageFrames.length > 1 && playing) {

@@ -11,8 +11,11 @@ import {
   preprocessImage,
   drawAsciiFrame,
   getAnimationFrameCount,
+  VIDEO_FPS,
+  MAX_VIDEO_SECONDS,
   type AsciiConfig,
 } from '@/lib/animations/ascii-engine';
+import { decodeSourceAudio, encodeAacAudio, audioChannels } from '@/lib/video-audio';
 // @ts-ignore - gif.js doesn't have proper ESM support
 import GIF from 'gif.js';
 import JSZip from 'jszip';
@@ -89,6 +92,7 @@ export default function BugsAnimatorPage() {
   const [githubStars, setGithubStars] = React.useState<number | null>(null);
   const importInputRef = React.useRef<HTMLInputElement>(null);
   const mainUploadRef = React.useRef<HTMLInputElement>(null);
+  const sourceVideoRef = React.useRef<File | null>(null); // for carrying audio into MP4 export
   const tx = getTexts(lang);
   const ht = tx.header;
   const pt = tx.playback;
@@ -127,8 +131,9 @@ export default function BugsAnimatorPage() {
       });
       URL.revokeObjectURL(objectUrl);
 
-      // Compute canvas dimensions from natural aspect ratio, max 1200px per side
-      const MAX_DIM = 1200;
+      // Compute canvas dimensions from natural aspect ratio (videos up to 1080x1920 for Reels)
+      const MAX_DIM = isVideo ? 1920 : 1200;
+      sourceVideoRef.current = null; // set only once a video's frames load successfully
       let newWidth = config.width;
       let newHeight = config.height;
       if (naturalWidth > 0 && naturalHeight > 0) {
@@ -175,13 +180,18 @@ export default function BugsAnimatorPage() {
         setVideoLoadingProgress(0);
         try {
           const { frames, delay } = await Promise.race([
-            loadVideoForAscii(file, cols, rows, 50, (p) => setVideoLoadingProgress(p)),
-            new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Video parsing timeout (60s)')), 60000)),
+            loadVideoForAscii(file, cols, rows, undefined, (p) => setVideoLoadingProgress(p)),
+            new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Video parsing timeout (5min)')), 300000)),
           ]) as Awaited<ReturnType<typeof loadVideoForAscii>>;
+          sourceVideoRef.current = file;
+          if (frames.length >= VIDEO_FPS * MAX_VIDEO_SECONDS) {
+            toast.info(`${MAX_VIDEO_SECONDS}s 이후 구간은 잘렸습니다 / trimmed to ${MAX_VIDEO_SECONDS}s`);
+          }
           setConfig((prev) => ({
             ...prev,
             width: newWidth,
             height: newHeight,
+            animationSpeed: VIDEO_FPS, // play at the source's real-time rate
             imageData: frames[0],
             imageFrames: frames,
             gifFrameDelay: delay,
@@ -483,11 +493,24 @@ export default function BugsAnimatorPage() {
     const ctx = offscreen.getContext('2d');
     if (!ctx) { setIsRecording(false); return; }
 
+    // Source soundtrack only lines up when frames play at the rate they were sampled
+    const sourceVideo = isAnimated ? sourceVideoRef.current : null;
+    const audioBuffer = sourceVideo && fps === VIDEO_FPS ? await decodeSourceAudio(sourceVideo) : null;
+    if (sourceVideo && !audioBuffer) {
+      toast.info(fps === VIDEO_FPS
+        ? '원본 소리를 넣을 수 없어 무음으로 저장합니다 / exporting without audio'
+        : `소리를 넣으려면 FPS를 ${VIDEO_FPS}로 두세요 / set FPS to ${VIDEO_FPS} to keep audio`);
+    }
+
     const { Muxer, ArrayBufferTarget } = await import('mp4-muxer');
     const muxer = new Muxer({
       target: new ArrayBufferTarget(),
       video: { codec: 'avc', width: exportWidth, height: exportHeight },
+      ...(audioBuffer && {
+        audio: { codec: 'aac', sampleRate: audioBuffer.sampleRate, numberOfChannels: audioChannels(audioBuffer) },
+      }),
       fastStart: 'in-memory',
+      firstTimestampBehavior: 'offset',
     });
 
     const encoder = new VideoEncoder({
@@ -499,7 +522,7 @@ export default function BugsAnimatorPage() {
       codec: 'avc1.420033',
       width: exportWidth,
       height: exportHeight,
-      bitrate: 2_500_000,
+      bitrate: 8_000_000, // dense glyph edges smear badly at lower rates
       framerate: fps,
     });
 
@@ -535,6 +558,13 @@ export default function BugsAnimatorPage() {
     }
 
     await encoder.flush();
+    if (audioBuffer) {
+      try {
+        await encodeAacAudio(audioBuffer, frameCount / fps, (chunk, meta) => muxer.addAudioChunk(chunk, meta));
+      } catch (e) {
+        toast.error(`Audio encoding error: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
     muxer.finalize();
 
     setRecordingProgress(100);
