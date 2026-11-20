@@ -1,6 +1,7 @@
 {
-  "fontSize": 10,
-  "importResolution": 240,
+  "cellSize": 5,
+  "fontSize": 6,
+  "importResolution": 400,
   "preprocessing": {
     "blur": 0,
     "grain": 0,
